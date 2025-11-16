@@ -1,10 +1,25 @@
 import express from 'express';
 import bodyParser from 'body-parser';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import getM3U8 from './utils/parse.js';
 import downloadM3U8 from './utils/dl.js';
+import { handleStorage } from './utils/storage.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(bodyParser.json());
+
+// 简单的文件注册表，用于生成一次性下载 URL
+const fileRegistry = new Map();
+
+function registerFile(filePath) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    fileRegistry.set(id, filePath);
+    return id;
+}
 
 // 请求日志中间件
 app.use((req, res, next) => {
@@ -30,6 +45,25 @@ app.all('*', (req, res, next) => {
 // 健康检查接口
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', message: 'Service is running' });
+});
+
+// 通过 ID 下载已注册的本地文件
+app.get('/files/:id', (req, res) => {
+    const id = req.params.id;
+    const filePath = fileRegistry.get(id);
+
+    if (!filePath) {
+        return res.status(404).json({
+            success: false,
+            error: 'File not found or expired'
+        });
+    }
+
+    res.download(filePath, path.basename(filePath), (err) => {
+        if (err) {
+            console.error(`[Files] 下载文件失败: ${err.message}`);
+        }
+    });
 });
 
 // 解析页面获取 M3U8 URL
@@ -80,7 +114,7 @@ app.post('/api/download', async (req, res) => {
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
     
     try {
-        const { m3u8Url, outputDir } = req.body;
+        const { m3u8Url, outputDir, storage } = req.body;
         
         if (!m3u8Url) {
             console.error(`[API] [${requestId}] ✗ 错误: 缺少必需参数 'm3u8Url'`);
@@ -93,10 +127,32 @@ app.post('/api/download', async (req, res) => {
         console.log(`[API] [${requestId}] 开始调用 downloadM3U8(${m3u8Url}, ${outputDir || 'data'})...`);
         const result = await downloadM3U8(m3u8Url, outputDir);
         console.log(`[API] [${requestId}] downloadM3U8 返回结果:`, JSON.stringify(result, null, 2));
-        
+
+        // 根据 storage 配置进行后处理
+        let storageResult = null;
+        let downloadUrl = null;
+
+        if (result.success && result.outputFile) {
+            const storageConfig = storage || { type: 'local' };
+            console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
+
+            storageResult = await handleStorage(result.outputFile, storageConfig, requestId);
+
+            if (storageResult?.type === 'local' && storageResult.success) {
+                const fileId = registerFile(result.outputFile);
+                const baseUrl = storageConfig.baseUrl || `${req.protocol}://${req.get('host')}`;
+                downloadUrl = `${baseUrl}/files/${fileId}`;
+                console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+            }
+        }
+
         if (result.success) {
             console.log(`[API] [${requestId}] ✓ 下载成功 - 成功: ${result.downloaded}/${result.total}, 失败: ${result.failed || 0}`);
-            res.json(result);
+            res.json({
+                ...result,
+                storage: storageResult || undefined,
+                downloadUrl: downloadUrl || undefined
+            });
         } else {
             console.error(`[API] [${requestId}] ✗ 下载失败: ${result.error} - ${result.errmsg || ''}`);
             res.status(400).json(result);
@@ -121,7 +177,7 @@ app.post('/api/process', async (req, res) => {
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
     
     try {
-        const { url, outputDir } = req.body;
+        const { url, outputDir, storage } = req.body;
         
         if (!url) {
             console.error(`[API] [${requestId}] ✗ 错误: 缺少必需参数 'url'`);
@@ -157,13 +213,33 @@ app.post('/api/process', async (req, res) => {
         console.log(`[API] [${requestId}] 开始下载 M3U8: ${m3u8Url}`);
         const downloadResult = await downloadM3U8(m3u8Url, outputDir);
         console.log(`[API] [${requestId}] 下载结果:`, JSON.stringify(downloadResult, null, 2));
+
+        // 存储后处理
+        let storageResult = null;
+        let downloadUrl = null;
+
+        if (downloadResult.success && downloadResult.outputFile) {
+            const storageConfig = storage || { type: 'local' };
+            console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
+
+            storageResult = await handleStorage(downloadResult.outputFile, storageConfig, requestId);
+
+            if (storageResult?.type === 'local' && storageResult.success) {
+                const fileId = registerFile(downloadResult.outputFile);
+                const baseUrl = storageConfig.baseUrl || `${req.protocol}://${req.get('host')}`;
+                downloadUrl = `${baseUrl}/files/${fileId}`;
+                console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+            }
+        }
         
         if (downloadResult.success) {
             console.log(`[API] [${requestId}] ✓ 完整流程成功完成`);
             res.json({
                 success: true,
                 m3u8Url: m3u8Url,
-                download: downloadResult
+                download: downloadResult,
+                storage: storageResult || undefined,
+                downloadUrl: downloadUrl || undefined
             });
         } else {
             console.error(`[API] [${requestId}] ✗ 下载失败: ${downloadResult.error} - ${downloadResult.errmsg || ''}`);
