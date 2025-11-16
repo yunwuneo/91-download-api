@@ -67,6 +67,25 @@ export default async function getM3U8(originUrl) {
         const $ = cheerio.load(content);
         let sources = [];
         let sourceCount = 0;
+
+        // 提取标题：优先使用 class="panel-title" 的 h3 标签，其次使用 <title>
+        let titleText = '';
+        try {
+            const panelTitle = $('h3.panel-title').first().text().trim();
+            const pageTitle = $('title').first().text().trim();
+
+            if (panelTitle) {
+                titleText = panelTitle;
+                console.log(`[Parse] 提取到 panel-title 作为标题: ${titleText}`);
+            } else if (pageTitle) {
+                titleText = pageTitle;
+                console.log(`[Parse] 提取到 <title> 作为标题: ${titleText}`);
+            } else {
+                console.log('[Parse] 未找到 panel-title 或 <title> 标题，使用空标题');
+            }
+        } catch (titleError) {
+            console.error('[Parse] 提取标题时发生错误:', titleError.message);
+        }
         
         $('source').each((index, element) => {
             sourceCount++;
@@ -102,7 +121,8 @@ export default async function getM3U8(originUrl) {
         return {
             success: sources.length > 0,
             error: sources.length > 0 ? undefined : 'No Valid M3U8 URL Found.',
-            result: sources
+            result: sources,
+            title: titleText || undefined
         };
     } catch (error) {
         console.error('[Parse] 发生异常:', error.message);

@@ -211,7 +211,9 @@ app.post('/api/process', async (req, res) => {
         // 第二步：下载视频
         console.log(`[API] [${requestId}] ========== 步骤 2: 下载视频 ==========`);
         console.log(`[API] [${requestId}] 开始下载 M3U8: ${m3u8Url}`);
-        const downloadResult = await downloadM3U8(m3u8Url, outputDir);
+        const videoTitle = parseResult.title || 'merged_video.ts';
+        console.log(`[API] [${requestId}] 使用标题作为文件名: ${videoTitle}`);
+        const downloadResult = await downloadM3U8(m3u8Url, outputDir, videoTitle);
         console.log(`[API] [${requestId}] 下载结果:`, JSON.stringify(downloadResult, null, 2));
 
         // 存储后处理

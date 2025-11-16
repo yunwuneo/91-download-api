@@ -6,7 +6,19 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export default async function downloadM3U8(m3u8URL, outputDir = 'data') {
+function sanitizeFileName(name) {
+    if (!name || typeof name !== 'string') return 'merged_video.ts';
+    // 去掉路径分隔符等非法字符
+    let safe = name.replace(/[\\\/:*?"<>|]/g, '_').trim();
+    if (!safe) safe = 'merged_video.ts';
+    // 确保有扩展名（默认 .ts）
+    if (!safe.includes('.')) {
+        safe = `${safe}.ts`;
+    }
+    return safe;
+}
+
+export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName = 'merged_video.ts') {
     console.log(`[Download] 开始下载 M3U8: ${m3u8URL}`);
     console.log(`[Download] 输出目录: ${outputDir}`);
     
@@ -117,33 +129,40 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data') {
         }
     }
 
-    // 下载所有 TS 片段
+    // 下载所有 TS 片段（并发下载）
     console.log(`[Download] 步骤 6: 开始下载 ${tsSegments.length} 个 TS 片段...`);
-    const downloadedFiles = [];
+    // 使用索引数组，保证后续合并时的顺序
+    const downloadedFiles = new Array(tsSegments.length);
     const failedDownloads = [];
-    
-    for (let i = 0; i < tsSegments.length; i++) {
+
+    // 为本次任务生成一个随机 ID，避免残留文件命名冲突
+    const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    console.log(`[Download] 本次任务 runId: ${runId}`);
+
+    const MAX_CONCURRENCY = 8; // 并发数量，可根据服务器情况调整
+
+    async function downloadOne(i) {
         const tsURL = tsSegments[i];
-        const filename = `segment_${String(i).padStart(6, '0')}.ts`;
+        const filename = `segment_${runId}_${String(i).padStart(6, '0')}.ts`;
         const filePath = path.join(outputPath, filename);
-        
+
         try {
             console.log(`[Download] [${i + 1}/${tsSegments.length}] 开始下载: ${filename}`);
             console.log(`[Download] [${i + 1}/${tsSegments.length}] URL: ${tsURL}`);
-            
+
             const response = await fetch(tsURL);
             console.log(`[Download] [${i + 1}/${tsSegments.length}] HTTP 响应: ${response.status} ${response.statusText}`);
-            
+
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
-            
+
             const buffer = await response.arrayBuffer();
             const bufferSize = buffer.byteLength;
             console.log(`[Download] [${i + 1}/${tsSegments.length}] 数据大小: ${(bufferSize / 1024).toFixed(2)} KB`);
-            
+
             fs.writeFileSync(filePath, Buffer.from(buffer));
-            downloadedFiles.push(filePath);
+            downloadedFiles[i] = filePath;
             console.log(`[Download] [${i + 1}/${tsSegments.length}] ✓ 下载成功: ${filePath}`);
         } catch (error) {
             console.error(`[Download] [${i + 1}/${tsSegments.length}] ✗ 下载失败: ${error.message}`);
@@ -152,7 +171,19 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data') {
         }
     }
 
-    console.log(`[Download] 下载完成 - 成功: ${downloadedFiles.length}/${tsSegments.length}, 失败: ${failedDownloads.length}`);
+    // 按批次控制并发数量
+    for (let start = 0; start < tsSegments.length; start += MAX_CONCURRENCY) {
+        const batchTasks = [];
+        const end = Math.min(start + MAX_CONCURRENCY, tsSegments.length);
+        for (let i = start; i < end; i++) {
+            batchTasks.push(downloadOne(i));
+        }
+        await Promise.all(batchTasks);
+    }
+
+    const successfulFiles = downloadedFiles.filter(Boolean);
+
+    console.log(`[Download] 下载完成 - 成功: ${successfulFiles.length}/${tsSegments.length}, 失败: ${failedDownloads.length}`);
     
     if (failedDownloads.length > 0) {
         console.error(`[Download] 失败的下载详情:`);
@@ -162,9 +193,10 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data') {
     }
 
     // 合并所有 TS 片段
-    if (downloadedFiles.length > 0) {
-        console.log(`[Download] 步骤 7: 合并 ${downloadedFiles.length} 个 TS 片段...`);
-        const outputFile = path.join(outputPath, 'merged_video.ts');
+    if (successfulFiles.length > 0) {
+        console.log(`[Download] 步骤 7: 合并 ${successfulFiles.length} 个 TS 片段...`);
+        const safeName = sanitizeFileName(fileName);
+        const outputFile = path.join(outputPath, safeName);
         console.log(`[Download] 输出文件: ${outputFile}`);
         
         const writeStream = fs.createWriteStream(outputFile);
@@ -172,11 +204,12 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data') {
         
         for (let i = 0; i < downloadedFiles.length; i++) {
             const filePath = downloadedFiles[i];
+            if (!filePath) continue; // 只合并下载成功的片段，顺序按索引保证
             const data = fs.readFileSync(filePath);
             const fileSize = data.length;
             totalSize += fileSize;
             writeStream.write(data);
-            console.log(`[Download] [合并 ${i + 1}/${downloadedFiles.length}] 已写入: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+            console.log(`[Download] [合并 ${i + 1}/${successfulFiles.length}] 已写入: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
         }
         
         writeStream.end();
