@@ -2,9 +2,12 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import getM3U8 from './utils/parse.js';
 import downloadM3U8 from './utils/dl.js';
 import { handleStorage } from './utils/storage.js';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +33,40 @@ app.use((req, res, next) => {
     }
     next();
 });
+
+// 简单 token 认证中间件
+// 环境变量：API_TOKEN（在 .env 中配置）
+function authMiddleware(req, res, next) {
+    const requiredToken = process.env.API_TOKEN;
+
+    // 如果未配置 API_TOKEN，则不启用认证（方便本地开发）
+    if (!requiredToken) {
+        console.warn('[Auth] 未配置 API_TOKEN，跳过认证（仅建议在开发环境使用）');
+        return next();
+    }
+
+    const headerToken = req.headers['x-api-token'] || req.headers['authorization'];
+    let token = '';
+
+    if (typeof headerToken === 'string') {
+        if (headerToken.toLowerCase().startsWith('bearer ')) {
+            token = headerToken.slice(7).trim();
+        } else {
+            token = headerToken.trim();
+        }
+    }
+
+    if (!token || token !== requiredToken) {
+        console.warn('[Auth] 认证失败，拒绝访问');
+        return res.status(401).json({
+            success: false,
+            error: 'Unauthorized',
+            errmsg: 'Invalid or missing API token'
+        });
+    }
+
+    next();
+}
 
 // CORS 中间件
 app.all('*', (req, res, next) => {
@@ -67,7 +104,7 @@ app.get('/files/:id', (req, res) => {
 });
 
 // 解析页面获取 M3U8 URL
-app.post('/api/parse', async (req, res) => {
+app.post('/api/parse', authMiddleware, async (req, res) => {
     const requestId = Date.now();
     console.log(`[API] [${requestId}] ========== 收到解析请求 ==========`);
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
@@ -108,7 +145,7 @@ app.post('/api/parse', async (req, res) => {
 });
 
 // 下载 M3U8 视频
-app.post('/api/download', async (req, res) => {
+app.post('/api/download', authMiddleware, async (req, res) => {
     const requestId = Date.now();
     console.log(`[API] [${requestId}] ========== 收到下载请求 ==========`);
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
@@ -171,7 +208,7 @@ app.post('/api/download', async (req, res) => {
 });
 
 // 完整流程：解析 + 下载
-app.post('/api/process', async (req, res) => {
+app.post('/api/process', authMiddleware, async (req, res) => {
     const requestId = Date.now();
     console.log(`[API] [${requestId}] ========== 收到完整流程请求 ==========`);
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
