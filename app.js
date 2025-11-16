@@ -177,7 +177,10 @@ app.post('/api/download', authMiddleware, async (req, res) => {
 
             if (storageResult?.type === 'local' && storageResult.success) {
                 const fileId = registerFile(result.outputFile);
-                const baseUrl = storageConfig.baseUrl || `${req.protocol}://${req.get('host')}`;
+                const baseUrl =
+                    process.env.DOWNLOAD_BASE_URL ||
+                    storageConfig.baseUrl ||
+                    `${req.protocol}://${req.get('host')}`;
                 downloadUrl = `${baseUrl}/files/${fileId}`;
                 console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
             }
@@ -265,7 +268,10 @@ app.post('/api/process', authMiddleware, async (req, res) => {
 
             if (storageResult?.type === 'local' && storageResult.success) {
                 const fileId = registerFile(downloadResult.outputFile);
-                const baseUrl = storageConfig.baseUrl || `${req.protocol}://${req.get('host')}`;
+                const baseUrl =
+                    process.env.DOWNLOAD_BASE_URL ||
+                    storageConfig.baseUrl ||
+                    `${req.protocol}://${req.get('host')}`;
                 downloadUrl = `${baseUrl}/files/${fileId}`;
                 console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
             }
