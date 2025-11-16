@@ -85,8 +85,11 @@ app.get('/health', (req, res) => {
 });
 
 // 通过 ID 下载已注册的本地文件
-app.get('/files/:id', (req, res) => {
-    const id = req.params.id;
+// 支持两种形式：
+// 1) /files/:id
+// 2) /files/:id/:filename   （filename 仅用于给下载工具展示，不参与实际查找）
+app.get('/files/:id/:filename?', (req, res) => {
+    const id = req.params.id; // 忽略 filename，只用 id 找文件
     const filePath = fileRegistry.get(id);
 
     if (!filePath) {
