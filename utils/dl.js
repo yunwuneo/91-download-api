@@ -18,7 +18,7 @@ function sanitizeFileName(name) {
     return safe;
 }
 
-export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName = 'merged_video.ts') {
+export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName = 'merged_video.ts', progressCallback = null) {
     console.log(`[Download] 开始下载 M3U8: ${m3u8URL}`);
     console.log(`[Download] 输出目录: ${outputDir}`);
     
@@ -120,6 +120,16 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName
 
     console.log(`[Download] ✓ 解析完成，找到 ${tsSegments.length} 个 TS 片段`);
     
+    // 发送解析完成的进度报告
+    if (progressCallback) {
+        progressCallback({
+            phase: 'parsed',
+            progress: 10,
+            totalSegments: tsSegments.length,
+            message: `Found ${tsSegments.length} TS segments`
+        });
+    }
+    
     if (tsSegments.length === 0) {
         console.error('[Download] 错误: M3U8 文件中未找到 TS 片段');
         console.log(`[Download] M3U8 内容: ${m3u8Content.substring(0, 1000)}`);
@@ -134,6 +144,7 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName
     // 使用索引数组，保证后续合并时的顺序
     const downloadedFiles = new Array(tsSegments.length);
     const failedDownloads = [];
+    let downloadedCount = 0; // 已下载的片段数量
 
     // 为本次任务生成一个随机 ID，避免残留文件命名冲突
     const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -168,6 +179,24 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName
             console.error(`[Download] [${i + 1}/${tsSegments.length}] ✗ 下载失败: ${error.message}`);
             console.error(`[Download] [${i + 1}/${tsSegments.length}] 错误堆栈:`, error.stack);
             failedDownloads.push({ index: i, url: tsURL, error: error.message });
+        } finally {
+            // 不管成功失败，都增加已处理的片段数量
+            downloadedCount++;
+            
+            // 计算下载进度 (10% 解析 + 80% 下载 + 10% 合并)
+            const downloadProgress = 10 + Math.floor((downloadedCount / tsSegments.length) * 80);
+            
+            // 发送下载进度报告
+            if (progressCallback) {
+                progressCallback({
+                    phase: 'downloading',
+                    progress: downloadProgress,
+                    downloaded: downloadedCount,
+                    total: tsSegments.length,
+                    failed: failedDownloads.length,
+                    message: `Downloaded ${downloadedCount}/${tsSegments.length} segments`
+                });
+            }
         }
     }
 
@@ -195,6 +224,16 @@ export default async function downloadM3U8(m3u8URL, outputDir = 'data', fileName
     // 合并所有 TS 片段
     if (successfulFiles.length > 0) {
         console.log(`[Download] 步骤 7: 合并 ${successfulFiles.length} 个 TS 片段...`);
+        
+        // 发送合并开始的进度报告
+        if (progressCallback) {
+            progressCallback({
+                phase: 'merging',
+                progress: 90,
+                message: `Starting to merge ${successfulFiles.length} segments`
+            });
+        }
+        
         const safeName = sanitizeFileName(fileName);
         const outputFile = path.join(outputPath, safeName);
         console.log(`[Download] 输出文件: ${outputFile}`);

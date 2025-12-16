@@ -18,6 +18,22 @@ app.use(bodyParser.json());
 // 简单的文件注册表，用于生成一次性下载 URL
 const fileRegistry = new Map();
 
+// 下载任务注册表，用于跟踪异步下载任务
+const taskRegistry = new Map();
+
+// 生成唯一的任务ID
+function generateJobId() {
+    return `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// 任务状态常量
+const TASK_STATUS = {
+    PENDING: 'pending',
+    PROCESSING: 'processing',
+    COMPLETED: 'completed',
+    FAILED: 'failed'
+};
+
 function registerFile(filePath) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     fileRegistry.set(id, filePath);
@@ -147,170 +163,361 @@ app.post('/api/parse', authMiddleware, async (req, res) => {
     }
 });
 
-// 下载 M3U8 视频
+// 下载 M3U8 视频（异步模式）
 app.post('/api/download', authMiddleware, async (req, res) => {
+    const { m3u8Url, outputDir, storage } = req.body;
+    
+    if (!m3u8Url) {
+        console.error(`[API] ✗ 错误: 缺少必需参数 'm3u8Url'`);
+        return res.status(400).json({
+            success: false,
+            error: 'Missing required parameter: m3u8Url'
+        });
+    }
+
+    // 生成任务ID
+    const jobId = generateJobId();
     const requestId = Date.now();
+    
+    // 初始化任务状态
+    const initialTaskStatus = {
+        jobId,
+        status: TASK_STATUS.PENDING,
+        requestId,
+        createdAt: new Date().toISOString(),
+        m3u8Url,
+        outputDir: outputDir || 'data',
+        storage: storage || { type: 'local' },
+        progress: 0
+    };
+    
+    taskRegistry.set(jobId, initialTaskStatus);
+    
     console.log(`[API] [${requestId}] ========== 收到下载请求 ==========`);
+    console.log(`[API] [${requestId}] 生成任务ID: ${jobId}`);
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
     
-    try {
-        const { m3u8Url, outputDir, storage } = req.body;
-        
-        if (!m3u8Url) {
-            console.error(`[API] [${requestId}] ✗ 错误: 缺少必需参数 'm3u8Url'`);
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required parameter: m3u8Url'
+    // 立即返回jobid给客户端
+    res.json({
+        success: true,
+        jobId,
+        message: 'Download task has been started. Please check status with jobId.'
+    });
+    
+    // 在后台异步处理下载任务
+    (async () => {
+        try {
+            // 更新任务状态为处理中
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.PROCESSING
             });
-        }
+            
+            console.log(`[API] [${requestId}] 开始调用 downloadM3U8(${m3u8Url}, ${outputDir || 'data'})...`);
+            // 添加进度回调函数
+            const progressCallback = (progressInfo) => {
+                const currentTask = taskRegistry.get(jobId);
+                if (currentTask) {
+                    taskRegistry.set(jobId, {
+                        ...currentTask,
+                        progress: progressInfo.progress,
+                        phase: progressInfo.phase,
+                        downloaded: progressInfo.downloaded,
+                        total: progressInfo.total,
+                        failed: progressInfo.failed
+                    });
+                }
+            };
+            
+            const result = await downloadM3U8(m3u8Url, outputDir, undefined, progressCallback);
+            console.log(`[API] [${requestId}] downloadM3U8 返回结果:`, JSON.stringify(result, null, 2));
 
-        console.log(`[API] [${requestId}] 开始调用 downloadM3U8(${m3u8Url}, ${outputDir || 'data'})...`);
-        const result = await downloadM3U8(m3u8Url, outputDir);
-        console.log(`[API] [${requestId}] downloadM3U8 返回结果:`, JSON.stringify(result, null, 2));
+            // 根据 storage 配置进行后处理
+            let storageResult = null;
+            let downloadUrl = null;
 
-        // 根据 storage 配置进行后处理
-        let storageResult = null;
-        let downloadUrl = null;
+            if (result.success && result.outputFile) {
+                const storageConfig = storage || { type: 'local' };
+                console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
 
-        if (result.success && result.outputFile) {
-            const storageConfig = storage || { type: 'local' };
-            console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
+                storageResult = await handleStorage(result.outputFile, storageConfig, requestId);
 
-            storageResult = await handleStorage(result.outputFile, storageConfig, requestId);
-
-            if (storageResult?.type === 'local' && storageResult.success) {
-                const fileId = registerFile(result.outputFile);
-                const baseUrl =
-                    process.env.DOWNLOAD_BASE_URL ||
-                    storageConfig.baseUrl ||
-                    `${req.protocol}://${req.get('host')}`;
-                downloadUrl = `${baseUrl}/files/${fileId}`;
-                console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+                if (storageResult?.type === 'local' && storageResult.success) {
+                    const fileId = registerFile(result.outputFile);
+                    const baseUrl = 
+                        process.env.DOWNLOAD_BASE_URL || 
+                        storageConfig.baseUrl || 
+                        `http://localhost:${process.env.PORT || 3005}`;
+                    downloadUrl = `${baseUrl}/files/${fileId}`;
+                    console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+                }
             }
-        }
 
-        if (result.success) {
-            console.log(`[API] [${requestId}] ✓ 下载成功 - 成功: ${result.downloaded}/${result.total}, 失败: ${result.failed || 0}`);
-            res.json({
-                ...result,
-                storage: storageResult || undefined,
-                downloadUrl: downloadUrl || undefined
+            if (result.success) {
+                console.log(`[API] [${requestId}] ✓ 下载成功 - 成功: ${result.downloaded}/${result.total}, 失败: ${result.failed || 0}`);
+                
+                // 更新任务状态为完成
+                taskRegistry.set(jobId, {
+                    ...initialTaskStatus,
+                    status: TASK_STATUS.COMPLETED,
+                    completedAt: new Date().toISOString(),
+                    result: {
+                        ...result,
+                        storage: storageResult || undefined,
+                        downloadUrl: downloadUrl || undefined
+                    },
+                    progress: 100
+                });
+            } else {
+                console.error(`[API] [${requestId}] ✗ 下载失败: ${result.error} - ${result.errmsg || ''}`);
+                
+                // 更新任务状态为失败
+                taskRegistry.set(jobId, {
+                    ...initialTaskStatus,
+                    status: TASK_STATUS.FAILED,
+                    completedAt: new Date().toISOString(),
+                    error: result.error,
+                    errmsg: result.errmsg || '',
+                    progress: 100
+                });
+            }
+        } catch (error) {
+            console.error(`[API] [${requestId}] ✗ 异常: ${error.message}`);
+            console.error(`[API] [${requestId}] 错误堆栈:`, error.stack);
+            
+            // 更新任务状态为失败
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.FAILED,
+                completedAt: new Date().toISOString(),
+                error: 'Internal server error',
+                errmsg: error.message,
+                progress: 100
             });
-        } else {
-            console.error(`[API] [${requestId}] ✗ 下载失败: ${result.error} - ${result.errmsg || ''}`);
-            res.status(400).json(result);
+        } finally {
+            console.log(`[API] [${requestId}] ========== 请求处理完成 ==========`);
         }
-    } catch (error) {
-        console.error(`[API] [${requestId}] ✗ 异常: ${error.message}`);
-        console.error(`[API] [${requestId}] 错误堆栈:`, error.stack);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            errmsg: error.message
-        });
-    } finally {
-        console.log(`[API] [${requestId}] ========== 请求处理完成 ==========`);
-    }
+    })();
 });
 
-// 完整流程：解析 + 下载
+// 完整流程：解析 + 下载（异步模式）
 app.post('/api/process', authMiddleware, async (req, res) => {
+    const { url, outputDir, storage } = req.body;
+    
+    if (!url) {
+        console.error(`[API] ✗ 错误: 缺少必需参数 'url'`);
+        return res.status(400).json({
+            success: false,
+            error: 'Missing required parameter: url'
+        });
+    }
+
+    // 生成任务ID
+    const jobId = generateJobId();
     const requestId = Date.now();
+    
+    // 初始化任务状态
+    const initialTaskStatus = {
+        jobId,
+        status: TASK_STATUS.PENDING,
+        requestId,
+        createdAt: new Date().toISOString(),
+        url,
+        outputDir: outputDir || 'data',
+        storage: storage || { type: 'local' },
+        progress: 0,
+        phase: 'pending'
+    };
+    
+    taskRegistry.set(jobId, initialTaskStatus);
+    
     console.log(`[API] [${requestId}] ========== 收到完整流程请求 ==========`);
+    console.log(`[API] [${requestId}] 生成任务ID: ${jobId}`);
     console.log(`[API] [${requestId}] 请求体:`, JSON.stringify(req.body, null, 2));
     
-    try {
-        const { url, outputDir, storage } = req.body;
-        
-        if (!url) {
-            console.error(`[API] [${requestId}] ✗ 错误: 缺少必需参数 'url'`);
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required parameter: url'
+    // 立即返回jobid给客户端
+    res.json({
+        success: true,
+        jobId,
+        message: 'Process task has been started. Please check status with jobId.'
+    });
+    
+    // 在后台异步处理完整流程
+    (async () => {
+        try {
+            // 更新任务状态为处理中
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.PROCESSING,
+                phase: 'parsing'
             });
-        }
-
-        // 第一步：解析页面获取 M3U8 URL
-        console.log(`[API] [${requestId}] ========== 步骤 1: 解析页面 ==========`);
-        console.log(`[API] [${requestId}] 开始解析 URL: ${url}`);
-        const parseResult = await getM3U8(url);
-        console.log(`[API] [${requestId}] 解析结果:`, JSON.stringify(parseResult, null, 2));
-        
-        if (!parseResult.success || !parseResult.result || parseResult.result.length === 0) {
-            console.error(`[API] [${requestId}] ✗ 解析失败: ${parseResult.error} - ${parseResult.errmsg || ''}`);
-            return res.status(400).json({
-                success: false,
-                error: 'Failed to parse M3U8 URL from page',
-                parseError: parseResult.error,
-                parseErrmsg: parseResult.errmsg
-            });
-        }
-
-        // 使用第一个找到的 M3U8 URL
-        const m3u8Url = parseResult.result[0];
-        console.log(`[API] [${requestId}] ✓ 解析成功，找到 ${parseResult.result.length} 个 M3U8 URL`);
-        console.log(`[API] [${requestId}] 使用第一个 M3U8 URL: ${m3u8Url}`);
-        
-        // 第二步：下载视频
-        console.log(`[API] [${requestId}] ========== 步骤 2: 下载视频 ==========`);
-        console.log(`[API] [${requestId}] 开始下载 M3U8: ${m3u8Url}`);
-        const videoTitle = parseResult.title || 'merged_video.ts';
-        console.log(`[API] [${requestId}] 使用标题作为文件名: ${videoTitle}`);
-        const downloadResult = await downloadM3U8(m3u8Url, outputDir, videoTitle);
-        console.log(`[API] [${requestId}] 下载结果:`, JSON.stringify(downloadResult, null, 2));
-
-        // 存储后处理
-        let storageResult = null;
-        let downloadUrl = null;
-
-        if (downloadResult.success && downloadResult.outputFile) {
-            const storageConfig = storage || { type: 'local' };
-            console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
-
-            storageResult = await handleStorage(downloadResult.outputFile, storageConfig, requestId);
-
-            if (storageResult?.type === 'local' && storageResult.success) {
-                const fileId = registerFile(downloadResult.outputFile);
-                const baseUrl =
-                    process.env.DOWNLOAD_BASE_URL ||
-                    storageConfig.baseUrl ||
-                    `${req.protocol}://${req.get('host')}`;
-                downloadUrl = `${baseUrl}/files/${fileId}`;
-                console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+            
+            // 第一步：解析页面获取 M3U8 URL
+            console.log(`[API] [${requestId}] ========== 步骤 1: 解析页面 ==========`);
+            console.log(`[API] [${requestId}] 开始解析 URL: ${url}`);
+            const parseResult = await getM3U8(url);
+            console.log(`[API] [${requestId}] 解析结果:`, JSON.stringify(parseResult, null, 2));
+            
+            if (!parseResult.success || !parseResult.result || parseResult.result.length === 0) {
+                console.error(`[API] [${requestId}] ✗ 解析失败: ${parseResult.error} - ${parseResult.errmsg || ''}`);
+                
+                // 更新任务状态为失败
+                taskRegistry.set(jobId, {
+                    ...initialTaskStatus,
+                    status: TASK_STATUS.FAILED,
+                    completedAt: new Date().toISOString(),
+                    error: 'Failed to parse M3U8 URL from page',
+                    parseError: parseResult.error,
+                    parseErrmsg: parseResult.errmsg,
+                    progress: 33 // 解析阶段大约占总进度的33%
+                });
+                return;
             }
-        }
+
+            // 使用第一个找到的 M3U8 URL
+            const m3u8Url = parseResult.result[0];
+            console.log(`[API] [${requestId}] ✓ 解析成功，找到 ${parseResult.result.length} 个 M3U8 URL`);
+            console.log(`[API] [${requestId}] 使用第一个 M3U8 URL: ${m3u8Url}`);
+            
+            // 更新任务进度
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.PROCESSING,
+                phase: 'downloading',
+                m3u8Url,
+                progress: 33 // 解析完成，进度到33%
+            });
+            
+            // 第二步：下载视频
+            console.log(`[API] [${requestId}] ========== 步骤 2: 下载视频 ==========`);
+            console.log(`[API] [${requestId}] 开始下载 M3U8: ${m3u8Url}`);
+            const videoTitle = parseResult.title || 'merged_video.ts';
+            console.log(`[API] [${requestId}] 使用标题作为文件名: ${videoTitle}`);
+            
+            // 添加进度回调函数
+            const progressCallback = (progressInfo) => {
+                const currentTask = taskRegistry.get(jobId);
+                if (currentTask) {
+                    // 计算总进度（解析占33%，下载占67%）
+                    const overallProgress = 33 + Math.floor((progressInfo.progress / 100) * 67);
+                    
+                    taskRegistry.set(jobId, {
+                        ...currentTask,
+                        progress: overallProgress,
+                        phase: `downloading-${progressInfo.phase}`,
+                        downloaded: progressInfo.downloaded,
+                        total: progressInfo.total,
+                        failed: progressInfo.failed
+                    });
+                }
+            };
+            
+            const downloadResult = await downloadM3U8(m3u8Url, outputDir, videoTitle, progressCallback);
+            console.log(`[API] [${requestId}] 下载结果:`, JSON.stringify(downloadResult, null, 2));
+
+            // 更新任务进度
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.PROCESSING,
+                phase: 'storing',
+                m3u8Url,
+                progress: 66 // 下载完成，进度到66%
+            });
+
+            // 存储后处理
+            let storageResult = null;
+            let downloadUrl = null;
+
+            if (downloadResult.success && downloadResult.outputFile) {
+                const storageConfig = storage || { type: 'local' };
+                console.log(`[API] [${requestId}] 开始存储后处理, type=${storageConfig.type || 'local'}`);
+
+                storageResult = await handleStorage(downloadResult.outputFile, storageConfig, requestId);
+
+                if (storageResult?.type === 'local' && storageResult.success) {
+                    const fileId = registerFile(downloadResult.outputFile);
+                    const baseUrl = 
+                        process.env.DOWNLOAD_BASE_URL || 
+                        storageConfig.baseUrl || 
+                        `http://localhost:${process.env.PORT || 3005}`;
+                    downloadUrl = `${baseUrl}/files/${fileId}`;
+                    console.log(`[API] [${requestId}] 生成本地下载 URL: ${downloadUrl}`);
+                }
+            }
         
-        if (downloadResult.success) {
-            console.log(`[API] [${requestId}] ✓ 完整流程成功完成`);
-            res.json({
-                success: true,
-                m3u8Url: m3u8Url,
-                download: downloadResult,
-                storage: storageResult || undefined,
-                downloadUrl: downloadUrl || undefined
+            if (downloadResult.success) {
+                console.log(`[API] [${requestId}] ✓ 完整流程成功完成`);
+                
+                // 更新任务状态为完成
+                taskRegistry.set(jobId, {
+                    ...initialTaskStatus,
+                    status: TASK_STATUS.COMPLETED,
+                    completedAt: new Date().toISOString(),
+                    phase: 'completed',
+                    m3u8Url,
+                    result: {
+                        m3u8Url: m3u8Url,
+                        download: downloadResult,
+                        storage: storageResult || undefined,
+                        downloadUrl: downloadUrl || undefined
+                    },
+                    progress: 100
+                });
+            } else {
+                console.error(`[API] [${requestId}] ✗ 下载失败: ${downloadResult.error} - ${downloadResult.errmsg || ''}`);
+                
+                // 更新任务状态为失败
+                taskRegistry.set(jobId, {
+                    ...initialTaskStatus,
+                    status: TASK_STATUS.FAILED,
+                    completedAt: new Date().toISOString(),
+                    phase: 'failed',
+                    m3u8Url,
+                    error: 'Download failed',
+                    downloadError: downloadResult.error,
+                    downloadErrmsg: downloadResult.errmsg,
+                    downloadDetails: downloadResult,
+                    progress: 66
+                });
+            }
+        } catch (error) {
+            console.error(`[API] [${requestId}] ✗ 异常: ${error.message}`);
+            console.error(`[API] [${requestId}] 错误堆栈:`, error.stack);
+            
+            // 更新任务状态为失败
+            taskRegistry.set(jobId, {
+                ...initialTaskStatus,
+                status: TASK_STATUS.FAILED,
+                completedAt: new Date().toISOString(),
+                phase: 'failed',
+                error: 'Internal server error',
+                errmsg: error.message,
+                progress: 0
             });
-        } else {
-            console.error(`[API] [${requestId}] ✗ 下载失败: ${downloadResult.error} - ${downloadResult.errmsg || ''}`);
-            res.status(400).json({
-                success: false,
-                m3u8Url: m3u8Url,
-                error: 'Download failed',
-                downloadError: downloadResult.error,
-                downloadErrmsg: downloadResult.errmsg,
-                downloadDetails: downloadResult
-            });
+        } finally {
+            console.log(`[API] [${requestId}] ========== 请求处理完成 ==========`);
         }
-    } catch (error) {
-        console.error(`[API] [${requestId}] ✗ 异常: ${error.message}`);
-        console.error(`[API] [${requestId}] 错误堆栈:`, error.stack);
-        res.status(500).json({
+    })();
+});
+
+// 查询任务状态接口
+app.get('/api/status/:jobid', authMiddleware, (req, res) => {
+    const jobId = req.params.jobid;
+    const task = taskRegistry.get(jobId);
+    
+    if (!task) {
+        return res.status(404).json({
             success: false,
-            error: 'Internal server error',
-            errmsg: error.message
+            error: 'Task not found',
+            message: 'The specified jobId does not exist or has been expired.'
         });
-    } finally {
-        console.log(`[API] [${requestId}] ========== 请求处理完成 ==========`);
     }
+    
+    // 返回任务状态
+    res.json({
+        success: true,
+        task
+    });
 });
 
 // 404 处理
