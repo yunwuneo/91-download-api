@@ -12,8 +12,9 @@
 
 - **健康检查**：`GET /health`
 - **解析页面获取 M3U8**：`POST /api/parse`
-- **下载 M3U8 视频**：`POST /api/download`
-- **一键流程：解析 + 下载 + 存储**：`POST /api/process`
+- **下载 M3U8 视频（异步）**：`POST /api/download`
+- **一键流程：解析 + 下载 + 存储（异步）**：`POST /api/process`
+- **查询任务状态**：`GET /api/status/:jobid`
 - **一次性本地下载链接**：`GET /files/:id`
 
 所有 `/api/*` 接口默认启用 **简单 Token 认证**（可通过 `.env` 控制）。
@@ -126,7 +127,7 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 
 ---
 
-### 3. 下载 M3U8 视频
+### 3. 下载 M3U8 视频（异步）
 
 - **URL**：`POST /api/download`
 - **认证**：需要
@@ -152,30 +153,21 @@ DOWNLOAD_BASE_URL=https://your-domain.com
   - `webdav`：上传到 WebDAV
   - `ftp`：上传到 FTP
 
-**成功响应示例**（本地存储）：
+**成功响应示例**：
 
 ```json
 {
   "success": true,
-  "downloaded": 100,
-  "total": 100,
-  "failed": 0,
-  "outputFile": "/abs/path/to/data/xxx.ts",
-  "storage": {
-    "success": true,
-    "type": "local",
-    "localPath": "/abs/path/to/data/xxx.ts",
-    "filename": "xxx.ts"
-  },
-  "downloadUrl": "http://your-host/files/xxxxxx"
+  "jobId": "job-1765890098-abc123",
+  "message": "Download task started"
 }
 ```
 
-> `downloadUrl` 是服务为本地文件生成的一次性下载链接（内部通过 `/files/:id` 实现）。
+> 接口会立即返回 `jobId`，下载任务在后台进行。使用 `GET /api/status/:jobid` 查询下载进度和结果。
 
 ---
 
-### 4. 一键流程：解析 + 下载 + 存储
+### 4. 一键流程：解析 + 下载 + 存储（异步）
 
 - **URL**：`POST /api/process`
 - **认证**：需要
@@ -202,27 +194,86 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 ```json
 {
   "success": true,
-  "m3u8Url": "https://example.com/file.m3u8",
-  "download": {
-    "success": true,
-    "downloaded": 100,
-    "total": 100,
-    "failed": 0,
-    "outputFile": "/abs/path/to/data/xxx.ts"
-  },
+  "jobId": "job-1765890098-abc123",
+  "message": "Processing task started"
+}
+```
+
+> 接口会立即返回 `jobId`，完整处理流程在后台进行。使用 `GET /api/status/:jobid` 查询处理进度和结果。
+
+---
+
+### 5. 查询任务状态
+
+- **URL**：`GET /api/status/:jobid`
+- **认证**：需要
+- **说明**：通过 `jobId` 查询异步任务（下载或处理）的执行状态和结果。
+
+**成功响应示例**：
+
+```json
+// 任务进行中（下载状态）
+{
+  "success": true,
+  "jobId": "job-1765890098-abc123",
+  "status": "processing",
+  "progress": 65,
+  "phase": "downloading",
+  "downloaded": 65,
+  "total": 100,
+  "failed": 0,
+  "startTime": 1765890098000
+}
+
+// 任务完成（本地存储）
+{
+  "success": true,
+  "jobId": "job-1765890098-abc123",
+  "status": "completed",
+  "progress": 100,
+  "phase": "completed",
+  "downloaded": 100,
+  "total": 100,
+  "failed": 0,
+  "outputFile": "/abs/path/to/data/xxx.ts",
   "storage": {
     "success": true,
     "type": "local",
     "localPath": "/abs/path/to/data/xxx.ts",
     "filename": "xxx.ts"
   },
-  "downloadUrl": "http://your-host/files/xxxxxx"
+  "downloadUrl": "http://your-host/files/xxxxxx",
+  "startTime": 1765890098000,
+  "endTime": 1765890120000
+}
+
+// 任务失败
+{
+  "success": true,
+  "jobId": "job-1765890098-abc123",
+  "status": "failed",
+  "progress": 0,
+  "phase": "failed",
+  "error": "Invalid M3U8 URL",
+  "startTime": 1765890098000,
+  "endTime": 1765890099000
 }
 ```
 
+**关键字段说明**：
+
+- `status`：任务状态，可能的值：
+  - `pending`：任务等待中
+  - `processing`：任务处理中
+  - `completed`：任务已完成
+  - `failed`：任务失败
+- `progress`：任务进度百分比（0-100）
+- `phase`：当前执行阶段（parsing, downloading, merging, storing, completed）
+- `downloadUrl`：仅当任务完成且使用本地存储时返回，指向一次性下载链接
+
 ---
 
-### 5. 本地文件下载
+### 6. 本地文件下载
 
 - **URL**：`GET /files/:id`
 - **说明**：通过 ID 下载已经在服务内部注册过的本地文件。

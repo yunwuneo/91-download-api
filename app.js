@@ -513,11 +513,45 @@ app.get('/api/status/:jobid', authMiddleware, (req, res) => {
         });
     }
     
-    // 返回任务状态
-    res.json({
+    // 构建响应对象
+    const response = {
         success: true,
-        task
-    });
+        jobId: task.jobId,
+        status: task.status,
+        progress: task.progress,
+        phase: task.phase,
+        createdAt: task.createdAt,
+        requestId: task.requestId,
+        m3u8Url: task.m3u8Url,
+        outputDir: task.outputDir,
+        storage: task.storage
+    };
+    
+    // 添加其他可选字段
+    if (task.downloaded !== undefined) response.downloaded = task.downloaded;
+    if (task.total !== undefined) response.total = task.total;
+    if (task.failed !== undefined) response.failed = task.failed;
+    if (task.completedAt !== undefined) response.completedAt = task.completedAt;
+    if (task.url !== undefined) response.url = task.url;
+    
+    // 仅当任务完成时，将downloadUrl提升到最外层
+    if (task.status === TASK_STATUS.COMPLETED && task.result?.downloadUrl) {
+        response.downloadUrl = task.result.downloadUrl;
+    }
+    
+    // 仅在任务失败时返回错误信息
+    if (task.status === TASK_STATUS.FAILED) {
+        if (task.error) response.error = task.error;
+        if (task.errmsg) response.errmsg = task.errmsg;
+        if (task.parseError) response.parseError = task.parseError;
+        if (task.parseErrmsg) response.parseErrmsg = task.parseErrmsg;
+        if (task.downloadError) response.downloadError = task.downloadError;
+        if (task.downloadErrmsg) response.downloadErrmsg = task.downloadErrmsg;
+        if (task.downloadDetails) response.downloadDetails = task.downloadDetails;
+    }
+    
+    // 返回任务状态
+    res.json(response);
 });
 
 // 404 处理
