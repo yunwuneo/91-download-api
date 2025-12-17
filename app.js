@@ -3,6 +3,8 @@ import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+// 引入日志模块
+import './utils/logger.js';
 import getM3U8 from './utils/parse.js';
 import downloadM3U8 from './utils/dl.js';
 import { handleStorage } from './utils/storage.js';
