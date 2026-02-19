@@ -33,6 +33,8 @@ export async function handleStorage(localFile, storageConfig = {}, requestId = '
                 localPath: localFile,
                 filename: path.basename(localFile)
             };
+        case 'local_dir':
+            return await copyToLocalDir(localFile, storageConfig, requestId);
         case 's3':
             return await uploadToS3(localFile, storageConfig, requestId);
         case 'webdav':
@@ -275,6 +277,65 @@ async function uploadToFtp(localFile, cfg, requestId = '') {
         };
     } finally {
         client.close();
+    }
+}
+
+async function copyToLocalDir(localFile, cfg, requestId = '') {
+    const {
+        // path 表示目标本地目录路径
+        path: targetDir
+    } = cfg || {};
+
+    const fileName = path.basename(localFile);
+
+    if (!targetDir) {
+        return {
+            success: false,
+            error: 'Invalid local_dir config',
+            errmsg: 'path is required for local_dir storage'
+        };
+    }
+
+    // 确保目标目录存在
+    try {
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+            console.log(`[Storage:LocalDir] [${requestId}] 创建目录: ${targetDir}`);
+        }
+    } catch (err) {
+        console.error(`[Storage:LocalDir] [${requestId}] ✗ 创建目录失败: ${err.message}`);
+        return {
+            success: false,
+            error: 'Failed to create target directory',
+            errmsg: err.message
+        };
+    }
+
+    const targetFilePath = path.join(targetDir, fileName);
+
+    console.log(`[Storage:LocalDir] [${requestId}] 准备复制到本地目录: ${targetFilePath}`);
+
+    try {
+        // 复制文件
+        fs.copyFileSync(localFile, targetFilePath);
+
+        console.log(`[Storage:LocalDir] [${requestId}] ✓ 复制成功`);
+
+        return {
+            success: true,
+            type: 'local_dir',
+            localPath: targetFilePath,
+            directory: targetDir,
+            filename: fileName
+        };
+    } catch (err) {
+        console.error(`[Storage:LocalDir] [${requestId}] ✗ 复制失败: ${err.message}`);
+        console.error(`[Storage:LocalDir] [${requestId}] 堆栈:`, err.stack);
+        return {
+            success: false,
+            error: 'Local directory copy failed',
+            errmsg: err.message
+        };
     }
 }
 

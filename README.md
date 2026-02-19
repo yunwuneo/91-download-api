@@ -4,7 +4,7 @@
 支持：
 - **解析页面**获取 M3U8 地址
 - **下载并合并 TS 片段**为单一视频文件
-- 下载完成后支持多种 **存储方式**：本地、S3、WebDAV、FTP
+- 下载完成后支持多种 **存储方式**：本地、本地目录、S3、WebDAV、FTP
 
 ---
 
@@ -149,6 +149,7 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 - `outputDir`：可选，相对项目根目录的输出目录（默认 `data`）。
 - `storage`：可选，下载完成后的存储策略：
   - `local`：仅保留本地文件，并返回可注册的路径
+  - `local_dir`：复制到指定的本地目录
   - `s3`：上传到 S3 或兼容存储
   - `webdav`：上传到 WebDAV
   - `ftp`：上传到 FTP
@@ -300,7 +301,18 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 }
 ```
 
-### 2. S3 / S3 兼容存储
+### 2. 本地目录存储（指定路径）
+
+```json
+{
+  "type": "local_dir",
+  "path": "/path/to/target/directory"
+}
+```
+
+- **path**：必填，目标本地目录的绝对路径。服务会自动创建不存在的目录结构。
+
+### 3. S3 / S3 兼容存储
 
 ```json
 {
@@ -315,7 +327,7 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 }
 ```
 
-### 3. WebDAV
+### 4. WebDAV
 
 ```json
 {
@@ -327,7 +339,7 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 }
 ```
 
-### 4. FTP
+### 5. FTP
 
 ```json
 {
