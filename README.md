@@ -329,6 +329,8 @@ DOWNLOAD_BASE_URL=https://your-domain.com
 
 ### 4. WebDAV
 
+#### 4.1 使用完整路径（包含文件名）
+
 ```json
 {
   "type": "webdav",
@@ -338,6 +340,25 @@ DOWNLOAD_BASE_URL=https://your-domain.com
   "remotePath": "/path/on/server/video.ts"
 }
 ```
+
+#### 4.2 使用目录路径（自动拼接文件名）
+
+```json
+{
+  "type": "webdav",
+  "url": "https://webdav.example.com",
+  "username": "user",
+  "password": "pass",
+  "path": "/path/on/server"
+}
+```
+
+**配置说明**：
+- `url`：必填，WebDAV服务器地址
+- `username`：可选，WebDAV服务器用户名
+- `password`：可选，WebDAV服务器密码
+- `remotePath`：可选，完整的远程文件路径（包含文件名）
+- `path`：可选，远程目录路径（不包含文件名），会自动拼接本地文件名
 
 ### 5. FTP
 
